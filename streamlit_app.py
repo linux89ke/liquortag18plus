@@ -195,19 +195,21 @@ def show_grid_and_download(results, originals=None, zip_name="tagged_images.zip"
     
     with dl_col:
         st.download_button(
-            label=f"📦 Download {len(results)} Tagged Image(s)",
+            label=f"Download {len(results)} Tagged Image(s)",
             data=build_zip(results),
             file_name=zip_name,
             mime="application/zip",
-            type="primary"
+            type="primary",
+            icon=":material/download:"
         )
     if originals:
         with orig_col:
             st.download_button(
-                label=f"📥 Download Originals",
+                label=f"Download Originals",
                 data=build_zip(originals),
                 file_name=zip_name.replace(".zip", "_originals.zip"),
-                mime="application/zip"
+                mime="application/zip",
+                icon=":material/folder_zip:"
             )
 
 st.title("18+ Tag Generator")
@@ -242,7 +244,14 @@ with tab_single:
         if product_img is not None:
             result = compose_image(product_img, tag_img_cached, apply_remove=remove_old_tags)
             st.image(result, width="stretch")
-            st.download_button("Download", img_to_bytes(result), out_name, "image/jpeg", type="primary")
+            st.download_button(
+                label="Download", 
+                data=img_to_bytes(result), 
+                file_name=out_name, 
+                mime="image/jpeg", 
+                type="primary",
+                icon=":material/download:"
+            )
         else:
             st.markdown('<div class="preview-empty">Preview will appear here</div>', unsafe_allow_html=True)
 
