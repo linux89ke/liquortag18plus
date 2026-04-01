@@ -109,9 +109,9 @@ def compose_image(product_img, tag_img, apply_remove=True):
 def process_bulk(products, tag):
     """Threaded image processing to utilize multiple CPU cores."""
     def _process(item):
-        img, name, is_device = item
+        img, name = item
         res = compose_image(img, tag, apply_remove=remove_old_tags)
-        return res, name if is_device else f"{name}_1"
+        return res, name
     
     with concurrent.futures.ThreadPoolExecutor() as ex:
         results = list(ex.map(_process, products))
@@ -258,9 +258,17 @@ with tab_single:
 with tab_files:
     files = st.file_uploader("Select images", type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True)
     if files:
-        products = [(Image.open(f).convert("RGBA"), f.name.rsplit('.', 1)[0], True) for f in files]
-        originals = [(Image.open(f).convert("RGB"), f.name.rsplit('.', 1)[0]) for f in files]
-        
+        # Standardize local files to have '_1' if not present for consistency
+        products = []
+        originals = []
+        for f in files:
+            base_name = f.name.rsplit('.', 1)[0]
+            if not base_name.endswith("_1"):
+                base_name = f"{base_name}_1"
+            
+            products.append((Image.open(f).convert("RGBA"), base_name))
+            originals.append((Image.open(f).convert("RGB"), base_name))
+            
         with st.spinner(f"Processing {len(products)} image(s)..."):
             results = process_bulk(products, tag_img_cached)
             
@@ -285,6 +293,11 @@ with tab_excel:
             def fetch_row(args):
                 idx, row = args
                 name = str(row[name_col]).strip() if name_col else f"product_{idx}"
+                
+                # Enforce '_1' naming right at fetch
+                if not name.endswith("_1"):
+                    name = f"{name}_1"
+                    
                 img = None
                 if url_col and pd.notna(row.get(url_col)):
                     img = fetch_image_from_url(str(row[url_col]))
@@ -301,7 +314,7 @@ with tab_excel:
                     
             if fetched:
                 with st.spinner("Applying tags..."):
-                    results = process_bulk([(img, name, False) for img, name in fetched], tag_img_cached)
+                    results = process_bulk([(img, name) for img, name in fetched], tag_img_cached)
                 show_grid_and_download(results, originals=[(img.convert("RGB"), name) for img, name in fetched])
 
 with tab_urls:
@@ -315,11 +328,11 @@ with tab_urls:
             futs = [ex.submit(fetch_image_from_url, u) for u in urls]
             for i, f in enumerate(concurrent.futures.as_completed(futs)):
                 img = f.result()
-                if img: fetched.append((img, f"image_{i+1}"))
+                if img: fetched.append((img, f"image_{i+1}_1"))
                 prog.progress((i + 1) / len(urls))
                 
         if fetched:
-            results = process_bulk([(img, name, False) for img, name in fetched], tag_img_cached)
+            results = process_bulk([(img, name) for img, name in fetched], tag_img_cached)
             show_grid_and_download(results, originals=[(img.convert("RGB"), name) for img, name in fetched])
 
 with tab_skus:
@@ -333,11 +346,15 @@ with tab_skus:
             futs = {ex.submit(search_by_sku, s): s for s in skus}
             for i, f in enumerate(concurrent.futures.as_completed(futs)):
                 img = f.result()
-                if img: fetched.append((img, futs[f]))
+                if img: 
+                    sku_name = futs[f]
+                    # Enforce '_1' naming right at fetch
+                    name = f"{sku_name}_1" if not sku_name.endswith("_1") else sku_name
+                    fetched.append((img, name))
                 prog.progress((i + 1) / len(skus))
                 
         if fetched:
-            results = process_bulk([(img, name, False) for img, name in fetched], tag_img_cached)
+            results = process_bulk([(img, name) for img, name in fetched], tag_img_cached)
             show_grid_and_download(results, originals=[(img.convert("RGB"), name) for img, name in fetched])
 
 with tab_category:
@@ -356,9 +373,12 @@ with tab_category:
                 futs = [ex.submit(lambda x: (x[0], fetch_image_from_url(x[1])), item) for item in scraped]
                 for i, f in enumerate(concurrent.futures.as_completed(futs)):
                     name, img = f.result()
-                    if img: fetched.append((img, name))
+                    if img: 
+                        # Enforce '_1' naming right at fetch
+                        name = f"{name}_1" if not name.endswith("_1") else name
+                        fetched.append((img, name))
                     prog.progress((i + 1) / len(scraped))
                     
             if fetched:
-                results = process_bulk([(img, name, False) for img, name in fetched], tag_img_cached)
+                results = process_bulk([(img, name) for img, name in fetched], tag_img_cached)
                 show_grid_and_download(results, originals=[(img.convert("RGB"), name) for img, name in fetched])
