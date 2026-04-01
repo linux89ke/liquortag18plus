@@ -40,9 +40,19 @@ marketplace = st.sidebar.radio("Region", ["Kenya", "Uganda"])
 MARKET_BASE = "https://www.jumia.co.ke" if marketplace == "Kenya" else "https://www.jumia.ug"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
 
+# ─── Session State Initialization ─────────────────────────────────────────────────
+# This prevents the UI from resetting when you click "Download"
+tabs_states = ["files", "excel", "urls", "skus", "category", "single"]
+for tab in tabs_states:
+    if f"results_{tab}" not in st.session_state:
+        st.session_state[f"results_{tab}"] = None
+        st.session_state[f"orig_{tab}"] = None
+if "single_name" not in st.session_state:
+    st.session_state["single_name"] = "tagged_image.jpg"
+
+
 # ─── High-Performance Image Processing ────────────────────────────────────────────
 def remove_existing_tag(img):
-    """Fast numpy array masking to detect and overwrite existing red tags."""
     img_rgb = img.convert('RGB')
     data = np.array(img_rgb)
     h, w, _ = data.shape
@@ -68,7 +78,6 @@ def remove_existing_tag(img):
     return img
 
 def crop_white_space(img):
-    """Calculates boundaries of non-white pixels to crop dead space."""
     arr = np.array(img.convert('RGB'))
     mask = arr < 245
     if not mask.any(): return img
@@ -83,7 +92,6 @@ def load_tag_image():
     return Image.open(TAG_PATH).convert("RGBA").resize(TARGET_CANVAS_SIZE, Image.Resampling.LANCZOS)
 
 def compose_image(product_img, tag_img, apply_remove=True):
-    """Composes the final 800x800 image."""
     img = remove_existing_tag(product_img) if apply_remove else product_img.copy()
     img = crop_white_space(img)
     
@@ -107,7 +115,6 @@ def compose_image(product_img, tag_img, apply_remove=True):
     return result
 
 def process_bulk(products, tag):
-    """Threaded image processing to utilize multiple CPU cores."""
     def _process(item):
         img, name = item
         res = compose_image(img, tag, apply_remove=remove_old_tags)
@@ -129,7 +136,7 @@ def build_zip(pairs, fmt="JPEG"):
             zf.writestr(f"{name}.jpg", img_to_bytes(img, fmt))
     return buf.getvalue()
 
-# ─── Fast HTTP Scraping (No Selenium required) ────────────────────────────────────
+# ─── Fast HTTP Scraping ───────────────────────────────────────────────────────────
 def fetch_image_from_url(url):
     try:
         r = requests.get(url, headers=HEADERS, timeout=10)
@@ -139,7 +146,6 @@ def fetch_image_from_url(url):
         return None
 
 def search_by_sku(sku):
-    """Scrapes directly via HTTP. 10x faster than Selenium."""
     try:
         url = f"{MARKET_BASE}/catalog/?q={sku}"
         r = requests.get(url, headers=HEADERS, timeout=10)
@@ -169,6 +175,10 @@ def scrape_category(category_url, max_items=30):
         results = []
         for art in soup.find_all('article', class_='prd')[:max_items]:
             sku = art.get('data-sku')
+            if not sku:
+                core = art.find('a', class_='core')
+                if core: sku = core.get('data-id')
+                
             img_tag = art.find('img', class_='img')
             if img_tag:
                 src = img_tag.get('data-src') or img_tag.get('src', '')
@@ -180,8 +190,7 @@ def scrape_category(category_url, max_items=30):
         return []
 
 # ─── UI & Interface ───────────────────────────────────────────────────────────────
-def show_grid_and_download(results, originals=None, zip_name="tagged_images.zip"):
-    # Limit preview to 8 to prevent Streamlit MediaFileStorageError
+def show_grid_and_download(results, originals=None, zip_name="tagged_images.zip", tab_id=""):
     preview_limit = min(8, len(results))
     st.markdown(f"**Previewing {preview_limit} of {len(results)} generated images:**")
     
@@ -200,7 +209,8 @@ def show_grid_and_download(results, originals=None, zip_name="tagged_images.zip"
             file_name=zip_name,
             mime="application/zip",
             type="primary",
-            icon=":material/download:"
+            icon=":material/download:",
+            key=f"dl_tag_{tab_id}"
         )
     if originals:
         with orig_col:
@@ -209,7 +219,8 @@ def show_grid_and_download(results, originals=None, zip_name="tagged_images.zip"
                 data=build_zip(originals),
                 file_name=zip_name.replace(".zip", "_originals.zip"),
                 mime="application/zip",
-                icon=":material/folder_zip:"
+                icon=":material/folder_zip:",
+                key=f"dl_orig_{tab_id}"
             )
 
 st.title("18+ Tag Generator")
@@ -225,65 +236,69 @@ tab_single, tab_files, tab_excel, tab_urls, tab_skus, tab_category = st.tabs([
     "Single Image", "Multiple Images", "Excel", "URLs", "SKUs", "Category Scrape"
 ])
 
+# ─── 1. Single Image ───
 with tab_single:
     col_in, col_out = st.columns(2, gap="large")
     with col_in:
         uploaded = st.file_uploader("Select image", type=["png", "jpg", "jpeg", "webp"])
         url_input = st.text_input("Or paste an image URL", placeholder="https://...")
-
-    product_img = None
-    out_name = "tagged_image.jpg"
-
-    if uploaded:
-        product_img = Image.open(uploaded).convert("RGBA")
-        out_name = f"{uploaded.name.rsplit('.', 1)[0]}.jpg"
-    elif url_input.strip():
-        product_img = fetch_image_from_url(url_input.strip())
+        
+        if st.button("Process Single Image", type="primary"):
+            if uploaded:
+                img = Image.open(uploaded).convert("RGBA")
+                # Device upload: preserve exact name
+                st.session_state.single_name = f"{uploaded.name.rsplit('.', 1)[0]}.jpg"
+                st.session_state.results_single = compose_image(img, tag_img_cached, apply_remove=remove_old_tags)
+            elif url_input.strip():
+                img = fetch_image_from_url(url_input.strip())
+                if img:
+                    # Fetched URL: append _1
+                    st.session_state.single_name = "image_1_1.jpg"
+                    st.session_state.results_single = compose_image(img, tag_img_cached, apply_remove=remove_old_tags)
 
     with col_out:
-        if product_img is not None:
-            result = compose_image(product_img, tag_img_cached, apply_remove=remove_old_tags)
-            st.image(result, width="stretch")
+        if st.session_state.results_single is not None:
+            st.image(st.session_state.results_single, width="stretch")
             st.download_button(
                 label="Download", 
-                data=img_to_bytes(result), 
-                file_name=out_name, 
+                data=img_to_bytes(st.session_state.results_single), 
+                file_name=st.session_state.single_name, 
                 mime="image/jpeg", 
                 type="primary",
-                icon=":material/download:"
+                icon=":material/download:",
+                key="dl_single"
             )
         else:
             st.markdown('<div class="preview-empty">Preview will appear here</div>', unsafe_allow_html=True)
 
+# ─── 2. Multiple Images (Device) ───
 with tab_files:
     files = st.file_uploader("Select images", type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True)
-    if files:
-        # Standardize local files to have '_1' if not present for consistency
+    if st.button("Process Uploaded Files", type="primary") and files:
         products = []
         originals = []
         for f in files:
+            # Device upload: preserve exact name
             base_name = f.name.rsplit('.', 1)[0]
-            if not base_name.endswith("_1"):
-                base_name = f"{base_name}_1"
-            
             products.append((Image.open(f).convert("RGBA"), base_name))
             originals.append((Image.open(f).convert("RGB"), base_name))
             
         with st.spinner(f"Processing {len(products)} image(s)..."):
-            results = process_bulk(products, tag_img_cached)
+            st.session_state.results_files = process_bulk(products, tag_img_cached)
+            st.session_state.orig_files = originals
             
-        st.success(f"{len(results)} image(s) ready.")
-        show_grid_and_download(results, originals=originals)
+    if st.session_state.results_files:
+        st.success(f"{len(st.session_state.results_files)} image(s) ready.")
+        show_grid_and_download(st.session_state.results_files, originals=st.session_state.orig_files, zip_name="device_uploads.zip", tab_id="files")
 
+# ─── 3. Excel ───
 with tab_excel:
     xl = st.file_uploader("Select Excel file", type=["xlsx", "xls"])
     if xl:
         df = pd.read_excel(xl)
-        
         url_col = next((c for c in df.columns if any(k in str(c).lower() for k in ['url', 'link', 'image'])), None)
         sku_col = next((c for c in df.columns if 'sku' in str(c).lower()), None)
         name_col = next((c for c in df.columns if any(k in str(c).lower() for k in ['name', 'title'])), df.columns[1] if len(df.columns) > 1 else None)
-        
         url_col = url_col or df.columns[0]
         
         if st.button("Process Excel Data", type="primary"):
@@ -292,9 +307,15 @@ with tab_excel:
             
             def fetch_row(args):
                 idx, row = args
-                name = str(row[name_col]).strip() if name_col else f"product_{idx}"
+                name = None
+                if sku_col and pd.notna(row.get(sku_col)):
+                    name = str(row[sku_col]).strip()
+                if not name and name_col and pd.notna(row.get(name_col)):
+                    name = re.sub(r'[^\w\s-]', '', str(row[name_col])).strip().replace(' ', '_')
+                if not name:
+                    name = f"product_{idx}"
                 
-                # Enforce '_1' naming right at fetch
+                # Scraped: Always append _1
                 if not name.endswith("_1"):
                     name = f"{name}_1"
                     
@@ -314,9 +335,15 @@ with tab_excel:
                     
             if fetched:
                 with st.spinner("Applying tags..."):
-                    results = process_bulk([(img, name) for img, name in fetched], tag_img_cached)
-                show_grid_and_download(results, originals=[(img.convert("RGB"), name) for img, name in fetched])
+                    st.session_state.results_excel = process_bulk([(img, name) for img, name in fetched], tag_img_cached)
+                    st.session_state.orig_excel = [(img.convert("RGB"), name) for img, name in fetched]
+            else:
+                st.error("No images found.")
 
+    if st.session_state.results_excel:
+        show_grid_and_download(st.session_state.results_excel, originals=st.session_state.orig_excel, zip_name="excel_tagged.zip", tab_id="excel")
+
+# ─── 4. URLs ───
 with tab_urls:
     urls_text = st.text_area("Paste image URLs, one per line", height=150)
     if urls_text.strip() and st.button("Fetch URLs", type="primary"):
@@ -328,13 +355,18 @@ with tab_urls:
             futs = [ex.submit(fetch_image_from_url, u) for u in urls]
             for i, f in enumerate(concurrent.futures.as_completed(futs)):
                 img = f.result()
+                # Scraped URL: Always append _1
                 if img: fetched.append((img, f"image_{i+1}_1"))
                 prog.progress((i + 1) / len(urls))
                 
         if fetched:
-            results = process_bulk([(img, name) for img, name in fetched], tag_img_cached)
-            show_grid_and_download(results, originals=[(img.convert("RGB"), name) for img, name in fetched])
+            st.session_state.results_urls = process_bulk([(img, name) for img, name in fetched], tag_img_cached)
+            st.session_state.orig_urls = [(img.convert("RGB"), name) for img, name in fetched]
 
+    if st.session_state.results_urls:
+        show_grid_and_download(st.session_state.results_urls, originals=st.session_state.orig_urls, zip_name="url_tagged.zip", tab_id="urls")
+
+# ─── 5. SKUs ───
 with tab_skus:
     skus_text = st.text_area("Enter product SKUs, one per line", height=150)
     if skus_text.strip() and st.button("Fetch SKUs", type="primary"):
@@ -348,15 +380,21 @@ with tab_skus:
                 img = f.result()
                 if img: 
                     sku_name = futs[f]
-                    # Enforce '_1' naming right at fetch
+                    # Scraped SKU: Always append _1
                     name = f"{sku_name}_1" if not sku_name.endswith("_1") else sku_name
                     fetched.append((img, name))
                 prog.progress((i + 1) / len(skus))
                 
         if fetched:
-            results = process_bulk([(img, name) for img, name in fetched], tag_img_cached)
-            show_grid_and_download(results, originals=[(img.convert("RGB"), name) for img, name in fetched])
+            st.session_state.results_skus = process_bulk([(img, name) for img, name in fetched], tag_img_cached)
+            st.session_state.orig_skus = [(img.convert("RGB"), name) for img, name in fetched]
+        else:
+            st.error("No verified images found for the provided SKUs.")
 
+    if st.session_state.results_skus:
+        show_grid_and_download(st.session_state.results_skus, originals=st.session_state.orig_skus, zip_name="sku_tagged.zip", tab_id="skus")
+
+# ─── 6. Category Scrape ───
 with tab_category:
     cat_url = st.text_input("Category URL")
     max_items = st.slider("Maximum items to scrape", 10, 100, 30, step=10)
@@ -374,11 +412,18 @@ with tab_category:
                 for i, f in enumerate(concurrent.futures.as_completed(futs)):
                     name, img = f.result()
                     if img: 
-                        # Enforce '_1' naming right at fetch
+                        # Scraped Category SKU: Always append _1
                         name = f"{name}_1" if not name.endswith("_1") else name
                         fetched.append((img, name))
                     prog.progress((i + 1) / len(scraped))
                     
             if fetched:
-                results = process_bulk([(img, name) for img, name in fetched], tag_img_cached)
-                show_grid_and_download(results, originals=[(img.convert("RGB"), name) for img, name in fetched])
+                st.session_state.results_category = process_bulk([(img, name) for img, name in fetched], tag_img_cached)
+                st.session_state.orig_category = [(img.convert("RGB"), name) for img, name in fetched]
+            else:
+                st.error("No images could be downloaded.")
+        else:
+            st.error("No products found on that page.")
+
+    if st.session_state.results_category:
+        show_grid_and_download(st.session_state.results_category, originals=st.session_state.orig_category, zip_name="category_tagged.zip", tab_id="category")
